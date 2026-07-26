@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import io, json, warnings
 warnings.filterwarnings('ignore')
 
@@ -40,22 +39,20 @@ st.markdown("""
     .insight-success { background: linear-gradient(90deg, #ECFDF5 0%, #FFFFFF 100%); border-left: 4px solid #10B981; padding: 1rem 1.2rem; border-radius: 8px; margin-bottom: 0.6rem; }
     .source-badge { display: inline-flex; align-items: center; gap: 0.4rem; background: #F1F5F9; border: 1px solid #E2E8F0; padding: 0.4rem 0.9rem; border-radius: 20px; font-size: 0.8rem; color: #475569; font-weight: 500; }
     .fancy-divider { height: 1px; background: linear-gradient(90deg, transparent 0%, #CBD5E1 50%, transparent 100%); margin: 2rem 0; }
-    .mode-badge { display: inline-block; padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.75rem; font-weight: 600; margin-left: 0.5rem; }
-    .mode-conservative { background: #DBEAFE; color: #1E40AF; }
-    .mode-moderate { background: #D1FAE5; color: #065F46; }
-    .mode-aggressive { background: #FEF3C7; color: #92400E; }
     .ai-panel { background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%); color: white; padding: 1.5rem; border-radius: 12px; margin: 1rem 0; }
     .ai-panel pre { color: #E2E8F0; white-space: pre-wrap; font-family: 'Inter', sans-serif; font-size: 0.9rem; line-height: 1.6; }
+    .preset-active { background: #DBEAFE; color: #1E40AF; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─── SESSION STATE INITIALIZATION ───
+# ─── SESSION STATE INITIALIZATION (must happen before any widgets) ───
 defaults = {
     'planned_hires': 8, 'promotion_rate': 0.08, 'salary_inflation': 0.06, 'attrition_factor': 1.0,
-    'ai_provider': 'None', 'model_mode': 'Moderate',
+    'ai_provider': 'Stochastic (Rule-Based)',
     'hire_l3': 40, 'hire_l4': 35, 'hire_l5': 20, 'hire_l6': 5,
     'promotion_bump': 20, 'backfill_delay': 1, 'cost_per_hire': 3.0,
     'promotion_cycle': 3,
+    'last_preset': 'Custom'
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -64,8 +61,8 @@ for k, v in defaults.items():
 # ─── SIDEBAR ───
 with st.sidebar:
     st.markdown("## 🤖 AI Insights")
-    ai_provider = st.selectbox("AI Provider", ['None', 'Kimi', 'Claude'], key='ai_provider',
-                                help="Select AI to generate strategic narratives. 'None' uses rule-based insights.")
+    ai_options = ['Stochastic (Rule-Based)', 'Kimi', 'Claude']
+    ai_provider = st.selectbox("AI Provider", ai_options, key='ai_provider')
 
     if ai_provider == 'Kimi':
         if 'KIMI_API_KEY' in st.secrets:
@@ -79,43 +76,41 @@ with st.sidebar:
             st.error("❌ Add ANTHROPIC_API_KEY to Streamlit secrets")
 
     st.markdown("---")
-    st.markdown("## 🎛️ Model Mode")
-    model_mode = st.selectbox("Structural Preset", ['Conservative', 'Moderate', 'Aggressive', 'Custom'], key='model_mode',
-                               help="Conservative = risk-averse assumptions. Aggressive = optimistic assumptions.")
+    st.markdown("## 🎯 Scenario Preset")
+    preset_options = ["Custom", "Status Quo", "Aggressive Growth", "Cost Optimization"]
 
-    if model_mode != 'Custom':
-        if st.button(f"🔧 Apply {model_mode} Defaults", use_container_width=True):
-            if model_mode == 'Conservative':
-                st.session_state.backfill_delay = 2
-                st.session_state.cost_per_hire = 5.0
-                st.session_state.promotion_bump = 15
-                st.session_state.promotion_cycle = 6
-                st.session_state.hire_l3 = 35
-                st.session_state.hire_l4 = 35
-                st.session_state.hire_l5 = 22
-                st.session_state.hire_l6 = 8
-            elif model_mode == 'Moderate':
-                st.session_state.backfill_delay = 1
-                st.session_state.cost_per_hire = 3.0
-                st.session_state.promotion_bump = 20
-                st.session_state.promotion_cycle = 3
-                st.session_state.hire_l3 = 40
-                st.session_state.hire_l4 = 35
-                st.session_state.hire_l5 = 20
-                st.session_state.hire_l6 = 5
-            elif model_mode == 'Aggressive':
-                st.session_state.backfill_delay = 0
-                st.session_state.cost_per_hire = 1.0
-                st.session_state.promotion_bump = 25
-                st.session_state.promotion_cycle = 2
-                st.session_state.hire_l3 = 50
-                st.session_state.hire_l4 = 30
-                st.session_state.hire_l5 = 15
-                st.session_state.hire_l6 = 5
-            st.rerun()
+    try:
+        preset_idx = preset_options.index(st.session_state.last_preset)
+    except ValueError:
+        preset_idx = 0
+
+    preset = st.selectbox("Select Preset", preset_options, index=preset_idx, key='preset_selector')
+
+    # Apply preset values BEFORE rendering parameter sliders
+    if preset != st.session_state.last_preset:
+        if preset == "Status Quo":
+            st.session_state.planned_hires = 8
+            st.session_state.promotion_rate = 0.08
+            st.session_state.salary_inflation = 0.06
+            st.session_state.attrition_factor = 1.0
+        elif preset == "Aggressive Growth":
+            st.session_state.planned_hires = 20
+            st.session_state.promotion_rate = 0.12
+            st.session_state.salary_inflation = 0.08
+            st.session_state.attrition_factor = 1.1
+        elif preset == "Cost Optimization":
+            st.session_state.planned_hires = 2
+            st.session_state.promotion_rate = 0.05
+            st.session_state.salary_inflation = 0.03
+            st.session_state.attrition_factor = 0.85
+        # Custom: leave current values as-is
+        st.session_state.last_preset = preset
+        st.rerun()
 
     st.markdown("---")
     st.markdown("## ⚙️ Simulation Parameters")
+    st.caption("Adjustable when 'Custom' preset is active. Presets load defaults below.")
+
     planned_hires = st.slider("📥 Planned Hires / Month", 0, 50, key='planned_hires',
                                help="Net new headcount added each month (excludes backfills)")
     promotion_rate = st.slider("📈 Promotion Rate (annual)", 0.0, 0.30, key='promotion_rate', step=0.01,
@@ -147,32 +142,6 @@ with st.sidebar:
                                help="Recruitment cost per external hire")
     promotion_cycle = st.selectbox("🔄 Promotion Cycle (months)", [1, 2, 3, 6, 12], key='promotion_cycle',
                                     help="Frequency of promotion evaluation cycles")
-
-    st.markdown("---")
-    st.markdown("## 🎯 Scenario Presets")
-    st.caption("These adjust simulation parameters only. Model assumptions stay as configured above.")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("📋 Status Quo", use_container_width=True):
-            st.session_state.planned_hires = 8
-            st.session_state.promotion_rate = 0.08
-            st.session_state.salary_inflation = 0.06
-            st.session_state.attrition_factor = 1.0
-            st.rerun()
-    with c2:
-        if st.button("🚀 Aggressive", use_container_width=True):
-            st.session_state.planned_hires = 20
-            st.session_state.promotion_rate = 0.12
-            st.session_state.salary_inflation = 0.08
-            st.session_state.attrition_factor = 1.1
-            st.rerun()
-    with c3:
-        if st.button("✂️ Cost Opt", use_container_width=True):
-            st.session_state.planned_hires = 2
-            st.session_state.promotion_rate = 0.05
-            st.session_state.salary_inflation = 0.03
-            st.session_state.attrition_factor = 0.85
-            st.rerun()
 
     st.markdown("---")
     st.markdown("### 📁 Data Source")
@@ -380,9 +349,9 @@ cost_change = ((result['final_monthly_cost'] / baseline_cost) - 1) * 100
 st.markdown('<div class="main-header">🧮 Workforce Scenario Engine</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Predictive Org Modeling | Monte Carlo Simulation | Tornado Sensitivity | AI-Powered Insights</div>', unsafe_allow_html=True)
 
-mode_class = {'Conservative': 'mode-conservative', 'Moderate': 'mode-moderate', 'Aggressive': 'mode-aggressive'}.get(st.session_state.model_mode, 'mode-moderate')
-ai_label = f" | AI: {st.session_state.ai_provider}" if st.session_state.ai_provider != 'None' else ""
-st.markdown(f'<div class="source-badge">📊 {data_source_label} | {len(df)} employees | Mode: <span class="mode-badge {mode_class}">{st.session_state.model_mode}</span>{ai_label} | July 2026</div>', unsafe_allow_html=True)
+preset_badge = f'<span class="preset-active">{st.session_state.last_preset}</span>'
+ai_badge = f" | AI: {st.session_state.ai_provider}" if st.session_state.ai_provider != 'Stochastic (Rule-Based)' else ""
+st.markdown(f'<div class="source-badge">📊 {data_source_label} | {len(df)} employees | Preset: {preset_badge}{ai_badge} | July 2026</div>', unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ─── ACTIVE ASSUMPTIONS BAR ───
@@ -550,16 +519,26 @@ st.markdown("<div class='fancy-divider'></div>", unsafe_allow_html=True)
 st.markdown('<div class="section-header">🤖 Strategic Insights</div>', unsafe_allow_html=True)
 
 ai_text = None
-if st.session_state.ai_provider != 'None':
-    with st.spinner(f"Consulting {st.session_state.ai_provider} AI for strategic analysis..."):
+use_ai = st.session_state.ai_provider != 'Stochastic (Rule-Based)'
+
+if use_ai:
+    with st.spinner(f"Consulting {st.session_state.ai_provider} for strategic analysis..."):
         try:
-            prompt = f"""You are a Chief People Officer with 15 years at Amazon, Trianz, and top tech firms. Analyze this workforce simulation and provide exactly 3 strategic insights.
+            # Validate API key exists
+            if st.session_state.ai_provider == 'Kimi' and 'KIMI_API_KEY' not in st.secrets:
+                st.warning("Kimi API key not found in secrets. Falling back to rule-based insights.")
+                use_ai = False
+            elif st.session_state.ai_provider == 'Claude' and 'ANTHROPIC_API_KEY' not in st.secrets:
+                st.warning("Claude API key not found in secrets. Falling back to rule-based insights.")
+                use_ai = False
+            else:
+                prompt = f"""You are a Chief People Officer with 15 years at Amazon, Trianz, and top tech firms. Analyze this workforce simulation and provide exactly 3 strategic insights.
 
 BASELINE WORKFORCE:
 - Total employees: {len(df)}
 - Monthly payroll: ₹{df['salary_lakhs'].sum()/100:.1f} Cr
-- Departments: {dict(df['department'].value_counts().head(3))}
-- Flight risk: {(df['attrition_risk_bucket'] == 'Critical').sum()} critical, {(df['attrition_risk_bucket'] == 'High').sum()} high, {(df['attrition_risk_bucket'] == 'Medium').sum()} medium
+- Top departments: {dict(df['department'].value_counts().head(3))}
+- Flight risk: {(df['attrition_risk_bucket'] == 'Critical').sum()} critical, {(df['attrition_risk_bucket'] == 'High').sum()} high
 - Ready for promotion: {(df['promotion_readiness'] == 'Ready Now').sum()}
 
 SIMULATION PARAMETERS:
@@ -574,7 +553,7 @@ MODEL ASSUMPTIONS:
 - Backfill delay: {st.session_state.backfill_delay} months
 - Cost per hire: ₹{st.session_state.cost_per_hire:.1f} Lakhs
 - Promotion cycle: Every {st.session_state.promotion_cycle} months
-- Model mode: {st.session_state.model_mode}
+- Preset: {st.session_state.last_preset}
 
 RESULTS AFTER 12 MONTHS:
 - Final headcount: {result['final_headcount']} (net change: {result['final_headcount'] - len(df):+})
@@ -588,30 +567,30 @@ FORMAT each insight as:
 
 Be concise, data-driven, and actionable. Write like a CPO presenting to a board."""
 
-            if st.session_state.ai_provider == 'Kimi':
-                from openai import OpenAI
-                client = OpenAI(api_key=st.secrets['KIMI_API_KEY'], base_url="https://api.moonshot.ai/v1")
-                response = client.chat.completions.create(
-                    model="kimi-k3",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=1500
-                )
-                ai_text = response.choices[0].message.content
-            elif st.session_state.ai_provider == 'Claude':
-                import anthropic
-                client = anthropic.Anthropic(api_key=st.secrets['ANTHROPIC_API_KEY'])
-                response = client.messages.create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=1500,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                ai_text = response.content[0].text
+                if st.session_state.ai_provider == 'Kimi':
+                    from openai import OpenAI
+                    client = OpenAI(api_key=st.secrets['KIMI_API_KEY'], base_url="https://api.moonshot.ai/v1")
+                    response = client.chat.completions.create(
+                        model="kimi-k3",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3,
+                        max_tokens=1500
+                    )
+                    ai_text = response.choices[0].message.content
+                elif st.session_state.ai_provider == 'Claude':
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=st.secrets['ANTHROPIC_API_KEY'])
+                    response = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=1500,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    ai_text = response.content[0].text
         except Exception as e:
             st.error(f"AI API Error: {str(e)}")
-            ai_text = None
+            use_ai = False
 
-if ai_text:
+if ai_text and use_ai:
     st.markdown('<div class="ai-panel"><pre>' + ai_text + '</pre></div>', unsafe_allow_html=True)
 else:
     # Rule-based fallback
@@ -646,15 +625,15 @@ else:
         st.markdown(f'<div class="{css_class}"><b>{severity}</b><br>{msg}</div>', unsafe_allow_html=True)
     if not insights:
         st.success("✅ All workforce metrics within healthy ranges for this scenario.")
-    if st.session_state.ai_provider == 'None':
-        st.info("💡 Select an AI Provider in the sidebar to generate LLM-powered strategic narratives.")
+    if st.session_state.ai_provider == 'Stochastic (Rule-Based)':
+        st.info("💡 Select Kimi or Claude in the sidebar to generate LLM-powered strategic narratives.")
 
 st.markdown("<div class='fancy-divider'></div>", unsafe_allow_html=True)
 
 # ─── EXECUTIVE SUMMARY ───
 st.markdown('<div class="section-header">📝 Executive Summary</div>', unsafe_allow_html=True)
 net_change = result['final_headcount'] - len(df)
-st.markdown(f'<div style="background: #F8FAFC; border-radius: 12px; padding: 1.5rem; border: 1px solid #E2E8F0; line-height: 1.8; color: #334155;">Under the <b>{st.session_state.model_mode}</b> model assumptions, workforce evolves from <b>{len(df)}</b> to <b>{result["final_headcount"]}</b> employees over 12 months (<b>{net_change:+,}</b> net change). Monthly payroll shifts from <b>₹{baseline_cost/100:.1f} Cr</b> to <b>₹{result["final_monthly_cost"]/100:.1f} Cr</b> (<b>{cost_change:+.1f}%</b> cost movement). Total attrition of <b>{result["total_attrition"]}</b> employees is offset by <b>{result["total_hires"]}</b> hires (including backfills) and <b>{result["total_promotions"]}</b> promotions. Hire mix is L3:{st.session_state.hire_l3}% L4:{st.session_state.hire_l4}% L5:{st.session_state.hire_l5}% L6:{st.session_state.hire_l6}%, with a {st.session_state.backfill_delay}-month backfill delay and ₹{st.session_state.cost_per_hire:.1f}L cost per hire.</div>', unsafe_allow_html=True)
+st.markdown(f'<div style="background: #F8FAFC; border-radius: 12px; padding: 1.5rem; border: 1px solid #E2E8F0; line-height: 1.8; color: #334155;">Under the <b>{st.session_state.last_preset}</b> preset with current assumptions, workforce evolves from <b>{len(df)}</b> to <b>{result["final_headcount"]}</b> employees over 12 months (<b>{net_change:+,}</b> net change). Monthly payroll shifts from <b>₹{baseline_cost/100:.1f} Cr</b> to <b>₹{result["final_monthly_cost"]/100:.1f} Cr</b> (<b>{cost_change:+.1f}%</b> cost movement). Total attrition of <b>{result["total_attrition"]}</b> employees is offset by <b>{result["total_hires"]}</b> hires (including backfills) and <b>{result["total_promotions"]}</b> promotions. Hire mix is L3:{st.session_state.hire_l3}% L4:{st.session_state.hire_l4}% L5:{st.session_state.hire_l5}% L6:{st.session_state.hire_l6}%, with a {st.session_state.backfill_delay}-month backfill delay and ₹{st.session_state.cost_per_hire:.1f}L cost per hire.</div>', unsafe_allow_html=True)
 
 st.markdown("<div class='fancy-divider'></div>", unsafe_allow_html=True)
 
@@ -664,7 +643,7 @@ st.markdown('<div style="background: #FEFCE8; border: 1px solid #FDE68A; border-
 
 assumptions = [
     {"icon": "👥", "title": "Backfill Replacement with Delay", "desc": f"Every departing employee is replaced after {st.session_state.backfill_delay} month(s). Until then, the role remains vacant. Zero onboarding productivity ramp is modeled.", "tag": "workforce", "impact": f"{'Overstates' if st.session_state.backfill_delay == 0 else 'Understates'} capacity by {st.session_state.backfill_delay} months per exit."},
-    {"icon": "💸", "title": "Cost Per Hire", "desc": f"Each external hire incurs a fixed recruitment cost of ₹{st.session_state.cost_per_hire:.1f} Lakhs. This includes agency fees, signing bonuses, and onboarding overhead.", "tag": "financial", "impact": f"Adds ₹{(st.session_state.cost_per_hire * result["total_hires"])/100:.1f} Cr total to 12-month cost."},
+    {"icon": "💸", "title": "Cost Per Hire", "desc": f"Each external hire incurs a fixed recruitment cost of ₹{st.session_state.cost_per_hire:.1f} Lakhs. This includes agency fees, signing bonuses, and onboarding overhead.", "tag": "financial", "impact": f"Adds ₹{(st.session_state.cost_per_hire * result['total_hires'])/100:.1f} Cr total to 12-month cost."},
     {"icon": "📊", "title": "Hire Level Distribution", "desc": f"New hires follow a static distribution: L3 {st.session_state.hire_l3}%, L4 {st.session_state.hire_l4}%, L5 {st.session_state.hire_l5}%, L6 {st.session_state.hire_l6}%. This does not adjust based on open roles or market availability.", "tag": "structural", "impact": "May create level imbalances if hiring heavily skews to one department."},
     {"icon": "📈", "title": "Static Attrition Probability", "desc": "Each employee's attrition risk is calculated once at baseline and does not evolve with tenure, performance changes, or market conditions during the 12-month period.", "tag": "workforce", "impact": "May miss tenure-hump dynamics (e.g., 18-month flight risk spike)."},
     {"icon": "🎲", "title": "Monte Carlo with Fixed Seed", "desc": "Attrition events are probabilistic (Bernoulli trials) but use a fixed random seed (seed=42) for reproducibility. The same inputs always produce the same outputs.", "tag": "stochastic", "impact": "No confidence intervals shown; single deterministic path per scenario."},
@@ -676,7 +655,7 @@ assumptions = [
     {"icon": "🧬", "title": "No External Market Data", "desc": "Salary benchmarks, competitor attrition rates, and labor market conditions are not integrated. The model is purely internal-facing.", "tag": "workforce", "impact": "May miss market-driven salary compression or talent shortage effects."},
     {"icon": "📉", "title": "No Layoff or Restructuring Logic", "desc": "The model only simulates voluntary attrition. Involuntary terminations, performance-based exits, or strategic workforce reductions are not modeled.", "tag": "workforce", "impact": "Cost Optimization scenarios may understate achievable headcount reduction."},
     {"icon": "🌍", "title": "Single Currency & Geography", "desc": "All costs are in INR Lakhs. Multi-currency workforces, geo-differential pay, and cross-border tax implications are not handled.", "tag": "financial", "impact": "Global companies need FX-adjusted modeling."},
-    {"icon": "🤖", "title": "AI Insights", "desc": f"The strategic insights panel uses {'Claude/Kimi LLM' if st.session_state.ai_provider != 'None' else 'hardcoded business rules'} to generate recommendations. Thresholds are based on industry benchmarks.", "tag": "stochastic", "impact": f"{'LLM insights may vary in tone and specificity.' if st.session_state.ai_provider != 'None' else 'Rule-based insights may not generalize to all industries.'}"},
+    {"icon": "🤖", "title": "AI Insights", "desc": f"The strategic insights panel uses {'Claude/Kimi LLM' if st.session_state.ai_provider != 'Stochastic (Rule-Based)' else 'hardcoded business rules'} to generate recommendations. Thresholds are based on industry benchmarks.", "tag": "stochastic", "impact": f"{'LLM insights may vary in tone and specificity.' if st.session_state.ai_provider != 'Stochastic (Rule-Based)' else 'Rule-based insights may not generalize to all industries.'}"},
 ]
 
 for a in assumptions:
@@ -693,11 +672,11 @@ with col_d1:
 with col_d2:
     summary = {
         'scenario': {
+            'preset': st.session_state.last_preset,
             'planned_hires_per_month': st.session_state.planned_hires,
             'promotion_rate': st.session_state.promotion_rate,
             'salary_inflation': st.session_state.salary_inflation,
             'attrition_multiplier': st.session_state.attrition_factor,
-            'model_mode': st.session_state.model_mode,
             'ai_provider': st.session_state.ai_provider
         },
         'assumptions': {
@@ -721,4 +700,4 @@ with col_d2:
     st.download_button(label="⬇️ Download Summary JSON", data=json_str, file_name='scenario_summary.json', mime='application/json', use_container_width=True)
 
 st.markdown("---")
-st.caption("Built with ❤️ using Streamlit + Plotly | Workforce Scenario Engine v2.0")
+st.caption("Built with ❤️ using Streamlit + Plotly | Workforce Scenario Engine v2.1")
