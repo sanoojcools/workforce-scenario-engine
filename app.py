@@ -755,9 +755,14 @@ for i, q in enumerate(sample_questions):
 if "pending_question" in st.session_state:
     q = st.session_state.pending_question
     del st.session_state.pending_question
-    with st.spinner("🤖 " + ai_provider + " Agent is thinking..."):
-        answer = process_ai_question(q, ai_provider, sim, params, df, hist, final_df, restruct_cfg)
-    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    try:
+        with st.spinner("🤖 " + ai_provider + " Agent is thinking..."):
+            answer = process_ai_question(q, ai_provider, sim, params, df, hist, final_df, restruct_cfg)
+        if not answer or not answer.strip():
+            answer = "⚠️ The AI returned an empty response. Please try rephrasing your question."
+        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    except Exception as e:
+        st.session_state.chat_history.append({"role": "assistant", "content": "❌ Error processing question: " + str(e) + "\n\nFalling back to rule-based answer...\n\n" + stochastic_answer(q, sim, params, df, hist, final_df, restruct_cfg)})
     st.rerun()
 
 # Display chat history
@@ -765,11 +770,19 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Chat input
-if prompt := st.chat_input("Ask a strategic question about your workforce..."):
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
-    st.session_state.pending_question = prompt
+# Chat input - using text_input + button for reliability (st.chat_input has state issues in some Streamlit versions)
+chat_col1, chat_col2 = st.columns([4, 1])
+with chat_col1:
+    user_prompt = st.text_input("Ask a strategic question about your workforce...", key="chat_text_input", label_visibility="collapsed")
+with chat_col2:
+    ask_clicked = st.button("🚀 Ask", key="ask_button", use_container_width=True)
+
+if ask_clicked and user_prompt.strip():
+    st.session_state.chat_history.append({"role": "user", "content": user_prompt.strip()})
+    st.session_state.pending_question = user_prompt.strip()
     st.rerun()
+elif ask_clicked and not user_prompt.strip():
+    st.warning("Please type a question first.")
 
 # ---- DOWNLOADS ----
 st.subheader("⬇️ Export")
