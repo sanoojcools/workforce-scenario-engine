@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import json, warnings, re
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="Workforce Scenario Engine v3.0", layout="wide")
@@ -37,7 +38,6 @@ def call_llm(messages, provider):
         try:
             msgs = [{"role":m["role"], "content":m["content"]} for m in messages if m["role"]!="system"]
             sys_msg = next((m["content"] for m in messages if m["role"]=="system"), "")
-            # Try newer model first, fallback to older if connection fails
             for model_name in ["claude-3-5-sonnet-20240620", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"]:
                 try:
                     resp = client.messages.create(model=model_name, max_tokens=2000, system=sys_msg, messages=msgs)
@@ -45,8 +45,8 @@ def call_llm(messages, provider):
                 except Exception as inner_e:
                     err_str = str(inner_e).lower()
                     if "connection" in err_str or "network" in err_str or "timeout" in err_str:
-                        continue  # Try next model
-                    raise  # Re-raise if it's not a connection issue
+                        continue
+                    raise
             return None, "All Claude models failed with connection errors. Anthropic API may be unreachable from this server."
         except Exception as e:
             err_msg = str(e)
@@ -189,6 +189,51 @@ class WorkforceSimulator:
             total_cost = monthly_payroll + hire_cost + re_sev
             history.append({"month":month,"headcount":len(current),"monthly_cost_cr":round(total_cost,2),"payroll_cr":round(monthly_payroll,2),"hire_cost_cr":round(hire_cost,2),"severance_cr":round(re_sev,2),"attrition":len(leavers),"hires":n_hire,"promotions":n_promote,"restructure_exits":re_exits})
         return pd.DataFrame(history), current, total_severance, total_restructure
+
+# ========== MONTE CARLO ENGINE ==========
+def run_monte_carlo(sim, base_params, n_runs, vary_params, restructuring_cfg, progress_bar=None):
+    """Run n_runs simulations with sampled parameters."""
+    records = []
+    trajectories = []
+    cost_trajectories = []
+
+    for i in range(n_runs):
+        p = base_params.copy()
+        # Sample parameters
+        if "attrition_multiplier" in vary_params:
+            p["attrition_multiplier"] = float(np.clip(np.random.normal(base_params["attrition_multiplier"], 0.15), 0.5, 1.5))
+        if "salary_inflation" in vary_params:
+            p["salary_inflation"] = float(np.clip(np.random.normal(base_params["salary_inflation"], 1.5), 0.0, 20.0))
+        if "planned_hires_per_month" in vary_params:
+            p["planned_hires_per_month"] = int(np.clip(np.random.normal(base_params["planned_hires_per_month"], 4), 0, 50))
+        if "promotion_rate" in vary_params:
+            p["promotion_rate"] = float(np.clip(np.random.normal(base_params["promotion_rate"], 0.03), 0.0, 0.30))
+
+        np.random.seed(i + 10000)
+        hist, final_df, sev, re = sim.run_scenario(**p, restructuring=restructuring_cfg)
+
+        records.append({
+            "run": i+1,
+            "final_headcount": int(hist["headcount"].iloc[-1]),
+            "final_cost_cr": float(hist["monthly_cost_cr"].iloc[-1]),
+            "total_attrition": int(hist["attrition"].sum()),
+            "total_hires": int(hist["hires"].sum()),
+            "total_promotions": int(hist["promotions"].sum()),
+            "total_severance_cr": float(sev),
+            "total_restructure": int(re),
+            "attrition_mult_sampled": p.get("attrition_multiplier", base_params["attrition_multiplier"]),
+            "salary_inflation_sampled": p.get("salary_inflation", base_params["salary_inflation"]),
+            "hires_sampled": p.get("planned_hires_per_month", base_params["planned_hires_per_month"]),
+            "promo_rate_sampled": p.get("promotion_rate", base_params["promotion_rate"]),
+        })
+        trajectories.append(hist["headcount"].tolist())
+        cost_trajectories.append(hist["monthly_cost_cr"].tolist())
+
+        if progress_bar is not None:
+            progress_bar.progress((i + 1) / n_runs, text=f"Running simulation {i+1}/{n_runs}...")
+
+    df = pd.DataFrame(records)
+    return df, trajectories, cost_trajectories
 
 # ========== TORNADO ==========
 def tornado_analysis(sim, base_params, var_name, var_range, restructuring=None):
@@ -451,7 +496,9 @@ defaults = {
     "restructure_enabled": False, "cut_count": 0, "cut_pct": 0,
     "restructure_criteria": "performance", "protected_levels": ["L3"],
     "protected_depts": [], "severance_months": 3, "spread_months": 1,
-    "backfill_layoffs": False
+    "backfill_layoffs": False,
+    "mc_runs": 200, "mc_vary_attrition": True, "mc_vary_inflation": True,
+    "mc_vary_hires": True, "mc_vary_promo": False,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -729,6 +776,172 @@ st.subheader("📝 Executive Summary")
 total_cost_delta = hist["monthly_cost_cr"].iloc[-1] - hist["monthly_cost_cr"].iloc[0]
 st.markdown("Over 12 months, this scenario projects **" + str(hist["headcount"].iloc[-1]) + " employees** (net " + ("+" if hist["headcount"].iloc[-1] > len(df) else "") + str(hist["headcount"].iloc[-1] - len(df)) + "), with a monthly cost of **₹" + str(round(hist["monthly_cost_cr"].iloc[-1], 2)) + " Cr** (" + ("+" if total_cost_delta > 0 else "") + "₹" + str(round(total_cost_delta, 2)) + " Cr). **" + str(hist["attrition"].sum()) + "** natural exits expected against **" + str(hist["hires"].sum()) + "** hires (" + str(hist["promotions"].sum()) + " promotions). The biggest levers are hiring volume and attrition containment.")
 
+# ========== MONTE CARLO SECTION ==========
+st.subheader("🎲 Monte Carlo Simulation")
+with st.expander("Run probabilistic scenario analysis (500 independent simulations)", expanded=False):
+    mc_col1, mc_col2, mc_col3 = st.columns(3)
+    with mc_col1:
+        mc_runs = st.slider("Number of runs", 50, 1000, st.session_state.mc_runs, step=50, key="mc_runs")
+        st.session_state.mc_vary_attrition = st.toggle("Vary Attrition Multiplier", value=st.session_state.mc_vary_attrition, key="mc_vary_attrition")
+    with mc_col2:
+        st.session_state.mc_vary_inflation = st.toggle("Vary Salary Inflation", value=st.session_state.mc_vary_inflation, key="mc_vary_inflation")
+        st.session_state.mc_vary_hires = st.toggle("Vary Monthly Hires", value=st.session_state.mc_vary_hires, key="mc_vary_hires")
+    with mc_col3:
+        st.session_state.mc_vary_promo = st.toggle("Vary Promotion Rate", value=st.session_state.mc_vary_promo, key="mc_vary_promo")
+
+    vary_params = []
+    if st.session_state.mc_vary_attrition: vary_params.append("attrition_multiplier")
+    if st.session_state.mc_vary_inflation: vary_params.append("salary_inflation")
+    if st.session_state.mc_vary_hires: vary_params.append("planned_hires_per_month")
+    if st.session_state.mc_vary_promo: vary_params.append("promotion_rate")
+
+    if len(vary_params) == 0:
+        st.warning("Select at least one parameter to vary.")
+    else:
+        st.caption("Sampling: " + ", ".join([v.replace("_", " ").title() for v in vary_params]))
+        run_mc = st.button("🚀 Run Monte Carlo (" + str(mc_runs) + " simulations)", use_container_width=True, key="run_mc_button")
+
+        if run_mc:
+            progress_bar = st.progress(0, text="Initializing Monte Carlo...")
+            try:
+                mc_df, mc_traj, mc_cost_traj = run_monte_carlo(sim, params, mc_runs, vary_params, restruct_cfg, progress_bar)
+                progress_bar.empty()
+                st.success("✅ " + str(mc_runs) + " simulations complete in " + str(len(df)) + "-employee workforce")
+
+                # Store in session state for persistence
+                st.session_state.mc_results = mc_df
+                st.session_state.mc_traj = mc_traj
+                st.session_state.mc_cost_traj = mc_cost_traj
+                st.session_state.mc_executed = True
+            except Exception as e:
+                progress_bar.empty()
+                st.error("❌ Monte Carlo failed: " + str(e))
+
+        # Display results if available
+        if st.session_state.get("mc_executed", False) and "mc_results" in st.session_state:
+            mc_df = st.session_state.mc_results
+            mc_traj = st.session_state.mc_traj
+
+            # Probability cards
+            st.markdown("---")
+            st.markdown("**📊 Probability Metrics**")
+            p10_hc = int(np.percentile(mc_df["final_headcount"], 10))
+            p50_hc = int(np.percentile(mc_df["final_headcount"], 50))
+            p90_hc = int(np.percentile(mc_df["final_headcount"], 90))
+            p10_cost = round(np.percentile(mc_df["final_cost_cr"], 10), 2)
+            p50_cost = round(np.percentile(mc_df["final_cost_cr"], 50), 2)
+            p90_cost = round(np.percentile(mc_df["final_cost_cr"], 90), 2)
+
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            pc1.metric("P10 Headcount", p10_hc)
+            pc2.metric("P50 Headcount", p50_hc)
+            pc3.metric("P90 Headcount", p90_hc)
+            pc4.metric("Uncertainty", "±" + str(int((p90_hc - p10_hc)/2)) + " heads")
+
+            pc5, pc6, pc7, pc8 = st.columns(4)
+            pc5.metric("P10 Cost", "₹" + str(p10_cost) + " Cr")
+            pc6.metric("P50 Cost", "₹" + str(p50_cost) + " Cr")
+            pc7.metric("P90 Cost", "₹" + str(p90_cost) + " Cr")
+            pc8.metric("Uncertainty", "±₹" + str(round((p90_cost - p10_cost)/2, 2)) + " Cr")
+
+            # Fan chart - Headcount
+            st.markdown("---")
+            st.markdown("**📈 Headcount Fan Chart (P10/P50/P90)**")
+            months = list(range(1, 13))
+            p10_traj = [int(np.percentile([t[m-1] for t in mc_traj], 10)) for m in months]
+            p50_traj = [int(np.percentile([t[m-1] for t in mc_traj], 50)) for m in months]
+            p90_traj = [int(np.percentile([t[m-1] for t in mc_traj], 90)) for m in months]
+
+            fig_fan = go.Figure()
+            fig_fan.add_trace(go.Scatter(x=months, y=p90_traj, mode="lines", name="P90", line=dict(color="#d62728", width=0), showlegend=False))
+            fig_fan.add_trace(go.Scatter(x=months, y=p10_traj, mode="lines", name="P10", line=dict(color="#d62728", width=0), fill="tonexty", fillcolor="rgba(214,39,40,0.15)", showlegend=False))
+            fig_fan.add_trace(go.Scatter(x=months, y=p50_traj, mode="lines+markers", name="P50 (Median)", line=dict(color="#1f77b4", width=3)))
+            fig_fan.add_trace(go.Scatter(x=hist["month"], y=hist["headcount"], mode="lines", name="Deterministic", line=dict(color="gray", dash="dash", width=2)))
+            fig_fan.update_layout(title="Headcount Trajectory with Confidence Bands", xaxis_title="Month", yaxis_title="Headcount", height=400, template="plotly_white", hovermode="x unified")
+            st.plotly_chart(fig_fan, use_container_width=True)
+
+            # Fan chart - Cost
+            st.markdown("**💰 Cost Fan Chart (P10/P50/P90)**")
+            p10_cost_traj = [round(np.percentile([t[m-1] for t in mc_cost_traj], 10), 2) for m in months]
+            p50_cost_traj = [round(np.percentile([t[m-1] for t in mc_cost_traj], 50), 2) for m in months]
+            p90_cost_traj = [round(np.percentile([t[m-1] for t in mc_cost_traj], 90), 2) for m in months]
+
+            fig_fan_c = go.Figure()
+            fig_fan_c.add_trace(go.Scatter(x=months, y=p90_cost_traj, mode="lines", name="P90", line=dict(color="#ff7f0e", width=0), showlegend=False))
+            fig_fan_c.add_trace(go.Scatter(x=months, y=p10_cost_traj, mode="lines", name="P10", line=dict(color="#ff7f0e", width=0), fill="tonexty", fillcolor="rgba(255,127,14,0.15)", showlegend=False))
+            fig_fan_c.add_trace(go.Scatter(x=months, y=p50_cost_traj, mode="lines+markers", name="P50 (Median)", line=dict(color="#ff7f0e", width=3)))
+            fig_fan_c.add_trace(go.Scatter(x=hist["month"], y=hist["monthly_cost_cr"], mode="lines", name="Deterministic", line=dict(color="gray", dash="dash", width=2)))
+            fig_fan_c.update_layout(title="Cost Trajectory with Confidence Bands (₹ Cr)", xaxis_title="Month", yaxis_title="₹ Crores", height=400, template="plotly_white", hovermode="x unified")
+            st.plotly_chart(fig_fan_c, use_container_width=True)
+
+            # Histograms
+            st.markdown("---")
+            st.markdown("**📊 Distribution of Final Outcomes**")
+            h1, h2 = st.columns(2)
+            with h1:
+                fig_hist_hc = go.Figure(data=[go.Histogram(x=mc_df["final_headcount"], nbinsx=30, marker_color="#1f77b4")])
+                fig_hist_hc.add_vline(x=p50_hc, line_dash="dash", line_color="red", annotation_text="P50")
+                fig_hist_hc.update_layout(title="Final Headcount Distribution", xaxis_title="Headcount", yaxis_title="Frequency", height=350, template="plotly_white")
+                st.plotly_chart(fig_hist_hc, use_container_width=True)
+            with h2:
+                fig_hist_cost = go.Figure(data=[go.Histogram(x=mc_df["final_cost_cr"], nbinsx=30, marker_color="#ff7f0e")])
+                fig_hist_cost.add_vline(x=p50_cost, line_dash="dash", line_color="red", annotation_text="P50")
+                fig_hist_cost.update_layout(title="Final Cost Distribution (₹ Cr)", xaxis_title="₹ Crores", yaxis_title="Frequency", height=350, template="plotly_white")
+                st.plotly_chart(fig_hist_cost, use_container_width=True)
+
+            # Target probability calculator
+            st.markdown("---")
+            st.markdown("**🎯 Target Probability Calculator**")
+            tp1, tp2 = st.columns(2)
+            with tp1:
+                target_hc = st.number_input("Target Headcount", min_value=int(mc_df["final_headcount"].min())-50, max_value=int(mc_df["final_headcount"].max())+50, value=p50_hc, key="mc_target_hc")
+                prob_above_hc = round((mc_df["final_headcount"] >= target_hc).mean() * 100, 1)
+                prob_below_hc = round((mc_df["final_headcount"] <= target_hc).mean() * 100, 1)
+                st.metric("P(Headcount ≥ " + str(target_hc) + ")", str(prob_above_hc) + "%")
+                st.metric("P(Headcount ≤ " + str(target_hc) + ")", str(prob_below_hc) + "%")
+            with tp2:
+                target_cost = st.number_input("Target Cost (₹ Cr)", min_value=0.0, max_value=float(mc_df["final_cost_cr"].max())+50.0, value=float(p50_cost), step=1.0, key="mc_target_cost")
+                prob_below_cost = round((mc_df["final_cost_cr"] <= target_cost).mean() * 100, 1)
+                prob_above_cost = round((mc_df["final_cost_cr"] >= target_cost).mean() * 100, 1)
+                st.metric("P(Cost ≤ ₹" + str(round(target_cost,2)) + " Cr)", str(prob_below_cost) + "%")
+                st.metric("P(Cost ≥ ₹" + str(round(target_cost,2)) + " Cr)", str(prob_above_cost) + "%")
+
+            # Summary stats table
+            st.markdown("---")
+            st.markdown("**📋 Summary Statistics**")
+            summary_stats = pd.DataFrame({
+                "Metric": ["Final Headcount", "Final Cost (₹ Cr)", "Total Attrition", "Total Hires", "Total Promotions"],
+                "Mean": [
+                    int(mc_df["final_headcount"].mean()),
+                    round(mc_df["final_cost_cr"].mean(), 2),
+                    int(mc_df["total_attrition"].mean()),
+                    int(mc_df["total_hires"].mean()),
+                    int(mc_df["total_promotions"].mean())
+                ],
+                "Std Dev": [
+                    round(mc_df["final_headcount"].std(), 1),
+                    round(mc_df["final_cost_cr"].std(), 2),
+                    round(mc_df["total_attrition"].std(), 1),
+                    round(mc_df["total_hires"].std(), 1),
+                    round(mc_df["total_promotions"].std(), 1)
+                ],
+                "P10": [
+                    int(np.percentile(mc_df["final_headcount"], 10)),
+                    round(np.percentile(mc_df["final_cost_cr"], 10), 2),
+                    int(np.percentile(mc_df["total_attrition"], 10)),
+                    int(np.percentile(mc_df["total_hires"], 10)),
+                    int(np.percentile(mc_df["total_promotions"], 10))
+                ],
+                "P90": [
+                    int(np.percentile(mc_df["final_headcount"], 90)),
+                    round(np.percentile(mc_df["final_cost_cr"], 90), 2),
+                    int(np.percentile(mc_df["total_attrition"], 90)),
+                    int(np.percentile(mc_df["total_hires"], 90)),
+                    int(np.percentile(mc_df["total_promotions"], 90))
+                ]
+            })
+            st.dataframe(summary_stats, use_container_width=True, hide_index=True)
+
 # ========== CHAT PANEL ==========
 st.subheader("💬 Ask the Workforce AI")
 
@@ -770,7 +983,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Chat input - using text_input + button for reliability (st.chat_input has state issues in some Streamlit versions)
+# Chat input - using text_input + button for reliability
 chat_col1, chat_col2 = st.columns([4, 1])
 with chat_col1:
     user_prompt = st.text_input("Ask a strategic question about your workforce...", key="chat_text_input", label_visibility="collapsed")
