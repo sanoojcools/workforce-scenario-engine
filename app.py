@@ -782,18 +782,18 @@ with st.expander("Run probabilistic scenario analysis (500 independent simulatio
     mc_col1, mc_col2, mc_col3 = st.columns(3)
     with mc_col1:
         mc_runs = st.slider("Number of runs", 50, 1000, st.session_state.mc_runs, step=50, key="mc_runs")
-        st.session_state.mc_vary_attrition = st.toggle("Vary Attrition Multiplier", value=st.session_state.mc_vary_attrition, key="mc_vary_attrition")
+        mc_vary_attrition = st.toggle("Vary Attrition Multiplier", value=st.session_state.get("mc_vary_attrition", True), key="mc_vary_attrition")
     with mc_col2:
-        st.session_state.mc_vary_inflation = st.toggle("Vary Salary Inflation", value=st.session_state.mc_vary_inflation, key="mc_vary_inflation")
-        st.session_state.mc_vary_hires = st.toggle("Vary Monthly Hires", value=st.session_state.mc_vary_hires, key="mc_vary_hires")
+        mc_vary_inflation = st.toggle("Vary Salary Inflation", value=st.session_state.get("mc_vary_inflation", True), key="mc_vary_inflation")
+        mc_vary_hires = st.toggle("Vary Monthly Hires", value=st.session_state.get("mc_vary_hires", True), key="mc_vary_hires")
     with mc_col3:
-        st.session_state.mc_vary_promo = st.toggle("Vary Promotion Rate", value=st.session_state.mc_vary_promo, key="mc_vary_promo")
+        mc_vary_promo = st.toggle("Vary Promotion Rate", value=st.session_state.get("mc_vary_promo", False), key="mc_vary_promo")
 
     vary_params = []
-    if st.session_state.mc_vary_attrition: vary_params.append("attrition_multiplier")
-    if st.session_state.mc_vary_inflation: vary_params.append("salary_inflation")
-    if st.session_state.mc_vary_hires: vary_params.append("planned_hires_per_month")
-    if st.session_state.mc_vary_promo: vary_params.append("promotion_rate")
+    if mc_vary_attrition: vary_params.append("attrition_multiplier")
+    if mc_vary_inflation: vary_params.append("salary_inflation")
+    if mc_vary_hires: vary_params.append("planned_hires_per_month")
+    if mc_vary_promo: vary_params.append("promotion_rate")
 
     if len(vary_params) == 0:
         st.warning("Select at least one parameter to vary.")
