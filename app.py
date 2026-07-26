@@ -37,9 +37,24 @@ def call_llm(messages, provider):
         try:
             msgs = [{"role":m["role"], "content":m["content"]} for m in messages if m["role"]!="system"]
             sys_msg = next((m["content"] for m in messages if m["role"]=="system"), "")
-            resp = client.messages.create(model="claude-3-5-sonnet-20240620", max_tokens=2000, system=sys_msg, messages=msgs)
-            return resp.content[0].text, None
-        except Exception as e: return None, str(e)
+            # Try newer model first, fallback to older if connection fails
+            for model_name in ["claude-3-5-sonnet-20240620", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"]:
+                try:
+                    resp = client.messages.create(model=model_name, max_tokens=2000, system=sys_msg, messages=msgs)
+                    return resp.content[0].text, None
+                except Exception as inner_e:
+                    err_str = str(inner_e).lower()
+                    if "connection" in err_str or "network" in err_str or "timeout" in err_str:
+                        continue  # Try next model
+                    raise  # Re-raise if it's not a connection issue
+            return None, "All Claude models failed with connection errors. Anthropic API may be unreachable from this server."
+        except Exception as e:
+            err_msg = str(e)
+            if "authentication" in err_msg.lower():
+                return None, "Claude API key invalid or expired."
+            elif "credit" in err_msg.lower() or "billing" in err_msg.lower():
+                return None, "Claude API billing issue. Check your Anthropic account."
+            return None, err_msg
     return None, "Unknown provider"
 
 # ========== ATTRITION MODEL ==========
