@@ -479,6 +479,11 @@ def stochastic_answer(question, sim, params, df, hist, final_df, restructuring_c
         needed = max(0, rn - tp)
         return "**🎯 Promotion Pipeline Analysis**\n\n- **Ready Now:** " + str(rn) + " employees\n- **Projected promotions:** " + str(tp) + " over 12 months\n- **Ratio:** " + str(round(ratio,1)) + ":1\n\nTo clear the backlog, you need **" + str(needed) + " additional promotions** or will face elevated flight risk among top performers.\n\n💡 **Action:** Increase promotion rate to " + str(round(rn/len(df)*100,1)) + "% or create parallel growth tracks."
 
+    if "mc" in q or "monte carlo" in q or "what is" in q:
+        mc_runs_done = st.session_state.get("mc_executed", False)
+        mc_status = "You have already run a Monte Carlo simulation. " if mc_runs_done else "You haven't run a Monte Carlo simulation yet. "
+        return "**🎲 Monte Carlo (MC) in Workforce Planning**\n\nMonte Carlo is a probabilistic forecasting method that runs hundreds of independent simulations with sampled parameters to show you the **range of possible outcomes** — not just one number.\n\n**What it does here:**\n- Varies your key assumptions (attrition, inflation, hiring) within realistic bounds\n- Runs " + str(st.session_state.get("mc_runs", 200)) + " simulations to build a distribution\n- Shows P10/P50/P90 confidence bands (like weather forecasts)\n- Calculates probability of hitting targets (e.g., P(cost < ₹700 Cr) = 73%)\n\n**Why it matters:**\nYour deterministic model says **" + str(current_hc) + " employees at ₹" + str(round(current_cost,2)) + " Cr**. But that assumes attrition stays at exactly " + str(params.get("attrition_multiplier", 1.0)) + "x and inflation at exactly " + str(params.get("salary_inflation", 6.0)) + "%. Monte Carlo reveals: *what if attrition spikes to 1.2x while hiring falls 20%?*\n\n" + mc_status + "Toggle the **🎲 Monte Carlo Simulation** section above to run it."
+
     # Default fallback
     return "**🤖 Stochastic Agent**\n\nI analyzed your question: *\"" + question + "\"*\n\nBased on the current simulation:\n- **Headcount:** " + str(current_hc) + " (net " + str(current_hc - baseline_hc) + ")\n- **Cost:** ₹" + str(round(current_cost,2)) + " Cr/month\n- **Attrition:** " + str(hist["attrition"].sum()) + " projected exits\n- **Hires:** " + str(hist["hires"].sum()) + " total\n\nTry asking more specific questions like:\n- *'What if I freeze hiring?'*\n- *'Analyze Engineering department'*\n- *'Find optimal plan to grow 20%'*\n- *'Which department has highest flight risk?'*"
 
@@ -818,9 +823,10 @@ with st.expander("Run probabilistic scenario analysis (500 independent simulatio
                 st.error("❌ Monte Carlo failed: " + str(e))
 
         # Display results if available
-        if st.session_state.get("mc_executed", False) and "mc_results" in st.session_state:
+        if st.session_state.get("mc_executed", False) and "mc_results" in st.session_state and "mc_cost_traj" in st.session_state:
             mc_df = st.session_state.mc_results
             mc_traj = st.session_state.mc_traj
+            mc_cost_traj = st.session_state.mc_cost_traj
 
             # Probability cards
             st.markdown("---")
